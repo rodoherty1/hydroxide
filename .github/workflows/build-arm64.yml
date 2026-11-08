@@ -1,0 +1,105 @@
+name: build-arm64
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [patched-build]
+    tags: ['v*']
+
+env:
+  # Full SHA of the source to build (branch fix-captcha-stdin). Changing it
+  # needs a new RPM version in packaging/harbour-hydroxide.spec.
+  SOURCE_COMMIT: a40fb5d34bd10dfafab845db65050a2d424eeab2
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout packaging files
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+          path: src
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/go.mod
+          cache-dependency-path: src/go.sum
+
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: arm64
+        run: |
+          set -eu
+          test "$(git -C src rev-parse HEAD)" = "$SOURCE_COMMIT"
+          mkdir -p out
+          (cd src && go build -trimpath -ldflags "-s -w" -o ../out/hydroxide ./cmd/hydroxide)
+          file out/hydroxide
+          go version > out/BUILD_INFO
+          echo "source=$SOURCE_COMMIT" >> out/BUILD_INFO
+
+      - name: Package RPM
+        run: |
+          set -eu
+          sudo apt-get install -y --no-install-recommends rpm
+          top="$PWD/rpmbuild"
+          mkdir -p "$top"/{SOURCES,BUILD,RPMS}
+          cp out/hydroxide packaging/hydroxide.service "$top/SOURCES/"
+          if ! rpmbuild -bb --target aarch64 --define "_topdir $top" packaging/harbour-hydroxide.spec > rpmbuild.log 2>&1; then
+            echo "::error::rpmbuild failed: $(tail -n 15 rpmbuild.log | tr '\n' '|')"
+            exit 1
+          fi
+          cp "$top"/RPMS/aarch64/*.rpm out/
+          rpm -qpl out/*.rpm | tee out/RPM_FILES
+          rpm -qp --requires out/*.rpm | tee out/RPM_REQUIRES
+          rpm -qp --scripts out/*.rpm > out/RPM_SCRIPTS
+          rpm -qpi out/*.rpm > out/RPM_INFO
+
+      - name: Checksums
+        run: |
+          cd out
+          sha256sum hydroxide *.rpm > SHA256SUMS
+          cat BUILD_INFO SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hydroxide-linux-arm64
+          path: out/
+          retention-days: 14
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: hydroxide-linux-arm64
+          path: out
+
+      - name: Publish pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          cat > notes.md <<NOTES
+          Unofficial, unsigned aarch64 build of hydroxide with human verification (CAPTCHA) support and a stdin fix, for Sailfish OS. Not affiliated with the upstream projects.
+
+          Source: ${SOURCE_COMMIT}
+          Verify downloads against SHA256SUMS.
+          NOTES
+          cd out
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease \
+            --title "Unofficial build $TAG (aarch64)" --notes-file ../notes.md \
+            hydroxide harbour-hydroxide-*.rpm SHA256SUMS BUILD_INFO
