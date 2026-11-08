@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"os"
+	"strings"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
@@ -327,14 +328,12 @@ func main() {
 					log.Fatal("Only TOTP is supported as a 2FA method")
 				}
 
-				scanner := bufio.NewScanner(os.Stdin)
 				fmt.Printf("2FA TOTP code: ")
-				scanner.Scan()
-				code := scanner.Text()
+				code := strings.TrimSpace(<-stdinLines.next())
 
 				scope, err := c.AuthTOTP(code)
 				if err != nil {
-					log.Fatal(err)
+					log.Fatalf("2FA verification failed: %v", err)
 				}
 				a.Scope = scope
 			}
@@ -358,12 +357,12 @@ func main() {
 
 		keySalts, err := c.ListKeySalts()
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("listing key salts failed: %v", err)
 		}
 
 		_, err = c.Unlock(a, keySalts, mailboxPassword)
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("unlocking keys failed: %v", err)
 		}
 
 		secretKey, bridgePassword, err := auth.GeneratePassword()

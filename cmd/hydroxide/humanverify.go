@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -254,21 +253,20 @@ func askHumanVerification(c *protonmail.Client, details *protonmail.HumanVerific
 	fmt.Fprintf(os.Stderr, "Waiting for the CAPTCHA to be completed (paste a verification token and press Enter instead, if needed)...\n")
 
 	// Let the user paste a token themselves, in case the browser can't reach
-	// the local server
-	go func() {
-		scanner := bufio.NewScanner(os.Stdin)
-		if !scanner.Scan() {
-			return
-		}
-		if token := strings.TrimSpace(scanner.Text()); token != "" {
-			select {
-			case s.tokens <- token:
-			default:
+	// the local server. No goroutine is left reading stdin afterwards.
+	var token string
+	for token == "" {
+		select {
+		case token = <-s.tokens:
+		case line, ok := <-stdinLines.next():
+			if !ok {
+				// stdin closed: only the browser can deliver the token now
+				token = <-s.tokens
+				continue
 			}
+			token = strings.TrimSpace(line)
 		}
-	}()
-
-	token := <-s.tokens
+	}
 	c.HumanVerification = &protonmail.HumanVerification{
 		Token: token,
 		Type:  protonmail.HumanVerificationCaptcha,
